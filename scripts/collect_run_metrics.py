@@ -1157,9 +1157,12 @@ def _render_managed_instance(mi: dict[str, Any]) -> list[str]:
     classification = mi.get("classification")
 
     def limit_text(value: Any, unit: str = "") -> str:
-        # Classic General Purpose has limits per file, not one for the instance.
+        # On classic General Purpose the instance ceiling is the sum of the
+        # files' own limits, so the record says where the number came from.
         if value is None:
-            return "per file (see below)" if limits.get("per_file_limits") else "unknown"
+            return "unknown (see notes)"
+        if limits.get("instance_ceiling_basis") and limits.get("storage") == "classic":
+            return f"{_show(value, unit)} (sum of file limits)"
         return _show(value, unit)
 
     def percent_text(value: Any) -> str:

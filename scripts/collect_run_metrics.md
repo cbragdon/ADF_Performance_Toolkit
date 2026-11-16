@@ -614,19 +614,42 @@ It answers three questions:
 
 **Which limits apply.** The numbers come from Microsoft's
 [resource limits page](https://learn.microsoft.com/azure/azure-sql/managed-instance/resource-limits),
-read on 12 November 2026. Every record names that version, so you can tell
+last checked on 15 November 2026. Every record names that version, so you can tell
 which numbers it was judged against. They are kept in `scripts\mi_capacity.py`
 and should be updated there when Microsoft changes the page.
 
 | Instance | Log write limit (instance) | I/O limit | Throughput limit |
 | --- | --- | --- | --- |
-| General Purpose, classic | 4.5 MiB/s per vCore, at most 120 MiB/s | Per file, by file size: 500 IOPS up to 129 GiB, 2,300 up to 513 GiB, 5,000 up to 1,025 GiB, 7,500 above | Per file: 100, 150, 200, then 250 MiB/s for the same sizes |
+| General Purpose, classic | 4.5 MiB/s per vCore, at most 120 MiB/s | **Each file**, by its size: 500 IOPS up to 129 GiB, 2,300 up to 513 GiB, 5,000 up to 1,025 GiB, 7,500 above. **The instance**: the sum of all its files' limits. | **Each file**: 100, 150, 200, then 250 MiB/s for the same sizes. **The instance**: the sum of all its files' limits. |
 | General Purpose, Next-gen | 4.5 MiB/s per vCore, at most 120 MiB/s (standard-series) or 192 MiB/s (premium-series) | One pool for the instance: 3 IOPS per GB of reserved storage (at least 300), or the total set with `--mi-iops`, up to a cap for the vCore count | IOPS divided by 30, in MB/s (at least 75), up to a cap for the vCore count |
 | Business Critical | 16 MiB/s per vCore, at most 160 MiB/s (standard-series) or 192 MiB/s (premium-series) | 4,000 IOPS per vCore, at most 320,000 | Not limited |
 
+**Classic General Purpose has two ceilings for I/O,** and the record checks
+both. Each file has its own limit, set by its size. The instance's ceiling is
+the sum of those limits across every file of every database. Microsoft's page
+gives the example: "if you create 7 x 1-TB files with max 5 K IOPS each and
+seven small files (smaller than 128 GB) with 500 IOPS each, you can get 38500
+IOPS per instance (7x5000+7x500) if your workload can use all files." Throughput
+is summed the same way. Two things follow:
+
+- A load that writes to one file meets that file's limit long before the
+  instance's. That shows up as `FILE_LEVEL`, not `INSTANCE_LEVEL`.
+- The instance reaches its ceiling only if the work is spread across all its
+  files, and automatic backups use some IOPS. Read the instance percentage as
+  an upper bound on headroom, not a promise.
+
+The record shows the summed ceiling as "(sum of file limits)" and, under
+**Notes on the limits**, how many files it counted.
+
+If any non-`tempdb` file has no recorded size, the instance IOPS and throughput
+ceilings stay unknown. A partial sum is not used to judge instance pressure
+or declare the load healthy; known file limits and log governor waits can
+still provide evidence.
+
 In General Purpose, `tempdb` sits on local disk outside these limits, so its
-I/O is left out of the instance totals and has no file limit. In Business
-Critical it shares the instance's IOPS, so it is included.
+I/O is left out of the instance totals, it has no file limit, and its files
+aren't counted in the instance ceiling. In Business Critical it shares the
+instance's IOPS, so it is included.
 
 When the collector can't work out a limit, it says "unknown" and gives the
 reason under **Notes on the limits**. It never fills the gap with a guess.
@@ -818,7 +841,8 @@ hiding a burst that the script's sample caught.
   under a limit may already be at it.
 - **Managed Instance: file sizes come from `sys.master_files`.** On classic
   General Purpose a file's limit depends on its size, so a file that grew
-  during the test is judged by its size at `stop`.
+  during the test is judged by its size at `stop`. The instance ceiling uses
+  the same sizes.
 
 ## Verification status
 

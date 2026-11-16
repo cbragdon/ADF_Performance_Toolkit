@@ -611,6 +611,10 @@ class CommandLineTests(unittest.TestCase):
             markdown = (out / "T01" / "benchmark_record.md").read_text(encoding="utf-8")
             self.assertIn("## Managed Instance capacity", markdown)
             self.assertIn("LoadTest (target)", markdown)
+            # Classic General Purpose: the instance ceiling is the sum of the
+            # non-tempdb files' limits (two 100 GiB/20 GiB files and a 10 GiB one).
+            self.assertEqual(mi["limits"]["iops"], 1500)
+            self.assertIn("(sum of file limits)", markdown)
             with (out / "benchmark_index.csv").open("r", encoding="utf-8-sig", newline="") as handle:
                 row = next(csv.DictReader(handle))
             self.assertEqual(row["MiClassification"], mi["classification"])

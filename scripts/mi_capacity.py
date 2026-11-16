@@ -40,11 +40,20 @@ ENGINE_EDITION_MANAGED_INSTANCE = 8
 # Microsoft changes the page. Records keep the version they were judged with.
 
 LIMITS_SOURCE = "https://learn.microsoft.com/azure/azure-sql/managed-instance/resource-limits"
-LIMITS_RETRIEVED = "2026-11-12"
-LIMITS_VERSION = "mi-resource-limits-2026-11-12"
+LIMITS_RETRIEVED = "2026-11-15"
+LIMITS_VERSION = "mi-resource-limits-2026-11-15"
 
 # Classic General Purpose: every database file has its own IOPS and throughput
 # limit, set by the file's size. (largest size in GiB, IOPS, MiB/s)
+#
+# The instance's ceiling is the sum of its files' limits. Microsoft's page:
+# "Max instance IOPS depend on the file layout and distribution of workload.
+# As an example, if you create 7 x 1-TB files with max 5 K IOPS each and seven
+# small files (smaller than 128 GB) with 500 IOPS each, you can get 38500 IOPS
+# per instance (7x5000+7x500) if your workload can use all files. Some IOPS
+# are also used for autobackups." The same page says General Purpose
+# "Throughput and IOPS ... depends on the file size", so throughput is summed
+# the same way. tempdb is on local SSD and is left out of both sums.
 GP_CLASSIC_FILE_LIMITS: tuple[tuple[float, int, int], ...] = (
     (129, 500, 100),
     (513, 2300, 150),
@@ -254,14 +263,43 @@ def log_rate_limit(storage: str | None, vcores: int | None, series: str | None) 
     return None, "The hardware series is not recognised, and the limit differs between series at this vCore count."
 
 
-def instance_limits(instance: dict[str, Any] | None, stated: dict[str, Any]) -> dict[str, Any]:
-    """Work out which published limits apply to this instance."""
+def classic_instance_ceiling(layout: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Classic General Purpose instance ceiling: the sum of every file's own limit.
+
+    ``layout`` is the snapshot's file list (every file of every database, with
+    its size). tempdb is left out, because it is on local SSD. A file whose size
+    is unknown is counted separately; a partial sum is not an instance ceiling.
+    """
+    iops = mib_per_second = counted = unknown = 0
+    for f in layout:
+        if f.get("database_id") == TEMPDB_DATABASE_ID:
+            continue
+        file_iops, file_mib = gp_file_limit(f.get("size_bytes"))
+        if file_iops is None:
+            unknown += 1
+            continue
+        iops += file_iops
+        mib_per_second += file_mib
+        counted += 1
+    return {"files_counted": counted, "files_without_size": unknown,
+            "iops": iops, "mib_per_second": mib_per_second}
+
+
+def instance_limits(instance: dict[str, Any] | None, stated: dict[str, Any],
+                    layout: Sequence[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Work out which published limits apply to this instance.
+
+    ``layout`` is the list of files with their sizes. It is needed only for
+    classic General Purpose, whose instance ceiling is the sum of its files'
+    limits.
+    """
     limits: dict[str, Any] = {
         "storage": None,
         "iops": None,
         "throughput_mb_per_second": None,
         "log_write_mib_per_second": None,
         "per_file_limits": False,
+        "instance_ceiling_basis": None,
         "notes": [],
     }
     if not instance:
@@ -299,8 +337,34 @@ def instance_limits(instance: dict[str, Any] | None, stated: dict[str, Any]) -> 
 
     if storage == "classic":
         limits["per_file_limits"] = True
+        if layout:
+            basis = classic_instance_ceiling(layout)
+            limits["instance_ceiling_basis"] = basis
+            if basis["files_counted"] and not basis["files_without_size"]:
+                limits["iops"] = basis["iops"]
+                limits["throughput_mb_per_second"] = round(basis["mib_per_second"] * BYTES_PER_MIB / BYTES_PER_MB, 1)
+                limits["notes"].append(
+                    f"Classic General Purpose: the instance ceiling is the sum of the limits of its "
+                    f"{basis['files_counted']} database files, not counting tempdb ({basis['iops']:,} IOPS, "
+                    f"{basis['mib_per_second']:,} MiB/s). Microsoft notes that an instance reaches it only if the "
+                    "workload uses all files, and that automatic backups use some IOPS. Each file is also judged "
+                    "against its own limit."
+                )
+            if basis["files_without_size"]:
+                limits["notes"].append(
+                    f"Classic General Purpose instance ceiling unknown: {basis['files_without_size']} file(s) "
+                    "had no recorded size. The sum of the known files is not used as the instance limit."
+                )
+            elif not basis["files_counted"]:
+                limits["notes"].append(
+                    "Classic General Purpose instance ceiling unknown: no non-tempdb files were recorded."
+                )
+        else:
+            limits["notes"].append(
+                "Classic General Purpose instance ceiling unknown: the file list was not collected, and the "
+                "ceiling is the sum of the files' limits."
+            )
         limits["notes"].append(
-            "Classic General Purpose has no single instance IOPS limit; each file has its own, set by its size. "
             "The per-database log limit (22-65 MiB/s, depending on log file size) is not published per size and "
             "is not assessed."
         )
@@ -439,7 +503,10 @@ def assess(
             "The instance's tier, hardware, vCores, or reserved storage changed during the test. "
             "Limits are judged against the 'before' description."
         )
-    limits = instance_limits(instance, stated)
+    # File sizes at 'stop' set the classic General Purpose ceiling, the same
+    # sizes each file is judged by.
+    layout = after.get("files") if after.get("files") is not None else before.get("files")
+    limits = instance_limits(instance, stated, layout)
     result["limits"] = limits
 
     # --- what happened ------------------------------------------------------
@@ -556,7 +623,8 @@ def assess(
         classification = "NOT_PROVEN"
     elif files:
         # "Healthy" needs the storage limits; without them it cannot be said.
-        classification = "HEALTHY" if storage else "NOT_ASSESSED"
+        limits_known = bool(storage) and (storage != "classic" or limits["iops"] is not None)
+        classification = "HEALTHY" if limits_known else "NOT_ASSESSED"
     else:
         classification = "NO_ACTIVITY"
     if classification == "NO_ACTIVITY" and result["not_collected"].get("files"):

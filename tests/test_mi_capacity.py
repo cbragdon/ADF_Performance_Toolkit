@@ -105,6 +105,37 @@ class PublishedLimitTests(unittest.TestCase):
         self.assertEqual(m.hardware_series("Gen8"), "premium")
         self.assertIsNone(m.hardware_series("Gen4"))
 
+    def test_classic_instance_ceiling_reproduces_microsofts_example(self):
+        # Microsoft: 7 x 1 TB files at 5,000 IOPS and 7 small files at 500 IOPS
+        # give 38,500 IOPS for the instance.
+        layout = ([file_row(5, "Big", i, f"big{i}", "ROWS", 1024) for i in range(1, 8)]
+                  + [file_row(6, "Small", i, f"small{i}", "ROWS", 100) for i in range(1, 8)])
+        limits = m.instance_limits(instance(), {"gp_storage": "classic"}, layout)
+        self.assertEqual(limits["iops"], 38500)
+        self.assertEqual(limits["instance_ceiling_basis"]["mib_per_second"], 7 * 200 + 7 * 100)
+        self.assertEqual(limits["throughput_mb_per_second"], round(2100 * 1.048576, 1))
+
+    def test_classic_instance_ceiling_is_unknown_with_missing_file_sizes(self):
+        layout = [
+            file_row(5, "LoadTest", 1, "LoadTest", "ROWS", 600),       # 5,000 IOPS, 200 MiB/s
+            file_row(5, "LoadTest", 2, "LoadTest_log", "LOG", 20),     # 500 IOPS, 100 MiB/s
+            file_row(2, "tempdb", 1, "tempdev", "ROWS", 10),           # local SSD: not counted
+            dict(file_row(1, "master", 1, "master", "ROWS", 1), size_bytes=None),
+        ]
+        limits = m.instance_limits(instance(), {"gp_storage": "classic"}, layout)
+        self.assertIsNone(limits["iops"])
+        self.assertIsNone(limits["throughput_mb_per_second"])
+        self.assertEqual(limits["instance_ceiling_basis"]["iops"], 5500)
+        self.assertEqual(limits["instance_ceiling_basis"]["files_counted"], 2)
+        self.assertEqual(limits["instance_ceiling_basis"]["files_without_size"], 1)
+        self.assertTrue(any("no recorded size" in note for note in limits["notes"]))
+
+    def test_classic_instance_ceiling_is_unknown_without_the_file_list(self):
+        limits = m.instance_limits(instance(), {"gp_storage": "classic"}, None)
+        self.assertIsNone(limits["iops"])
+        self.assertTrue(limits["per_file_limits"])
+        self.assertTrue(any("file list was not collected" in note for note in limits["notes"]))
+
     def test_general_purpose_storage_type_is_never_guessed(self):
         limits = m.instance_limits(instance(reserved_mb=20 * 1024 * 1024), {})
         self.assertIsNone(limits["storage"])
@@ -131,6 +162,32 @@ class ClassificationTests(unittest.TestCase):
         result = run(files)
         self.assertGreaterEqual(result["utilisation_percent"]["log_write"], 70)
         self.assertEqual(result["classification"], "INSTANCE_LEVEL")
+
+    def test_classic_instance_near_its_summed_ceiling_is_instance_level(self):
+        # Two 100 GiB files (500 IOPS each, 1,000 for the instance) both busy
+        # but fast: no file is slow, but the instance is at 90% of its ceiling.
+        files = [
+            file_row(5, "LoadTest", 1, "LoadTest", "ROWS", 100, writes=45000, write_stall=45000 * 5),
+            file_row(5, "LoadTest", 2, "LoadTest_log", "LOG", 100, writes=45000, bytes_written=GIB, write_stall=45000 * 2),
+        ]
+        result = run(files)
+        self.assertEqual(result["limits"]["iops"], 1000)
+        self.assertEqual(result["utilisation_percent"]["iops"], 90.0)
+        self.assertEqual(result["classification"], "INSTANCE_LEVEL")
+        self.assertTrue(any("Average instance IOPS" in line for line in result["evidence"]))
+
+    def test_classic_incomplete_file_sizes_do_not_prove_instance_pressure_or_health(self):
+        files = [
+            file_row(5, "LoadTest", 1, "LoadTest", "ROWS", 100, writes=10000),
+            dict(file_row(5, "LoadTest", 2, "LoadTest_log", "LOG", 20,
+                          writes=65000, bytes_written=GIB), size_bytes=None),
+        ]
+        result = run(files)
+        self.assertEqual(result["observed"]["iops"], 750.0)
+        self.assertIsNone(result["utilisation_percent"]["iops"])
+        self.assertIsNone(result["utilisation_percent"]["throughput"])
+        self.assertEqual(result["classification"], "NOT_ASSESSED")
+        self.assertTrue(any("no recorded size" in note for note in result["limits"]["notes"]))
 
     def test_busy_slow_file_is_file_level(self):
         files = quiet_load()
