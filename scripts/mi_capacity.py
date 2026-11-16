@@ -125,6 +125,13 @@ ORDER BY end_time DESC;
 
 # Cumulative I/O counters and the allocated size of every file of every
 # database on the instance. One query; no database is switched into.
+#
+# Two permissions are involved. The I/O counters need VIEW SERVER STATE. The
+# file names, types, and sizes come from sys.master_files, which shows a row
+# only to a sign-in with CREATE DATABASE, ALTER ANY DATABASE, or VIEW ANY
+# DEFINITION (Microsoft's sys.master_files page, "Permissions"). Without one of
+# those, an inner join would silently return nothing. The LEFT JOIN keeps the
+# counters, and capture_mi_snapshot records which details were not visible.
 SQL_MI_INSTANCE_FILES = """
 SELECT
     vfs.database_id,
@@ -140,10 +147,17 @@ SELECT
     vfs.io_stall_read_ms,
     vfs.io_stall_write_ms
 FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS vfs
-INNER JOIN sys.master_files AS mf
+LEFT JOIN sys.master_files AS mf
     ON mf.database_id = vfs.database_id
    AND mf.file_id = vfs.file_id;
 """
+
+FILE_DETAILS_HIDDEN = (
+    "File names, types, and sizes were not visible for {hidden} of {total} files. sys.master_files shows a "
+    "row only to a sign-in with CREATE DATABASE, ALTER ANY DATABASE, or VIEW ANY DEFINITION permission. "
+    "Without them, the log write rate and the storage limits that depend on file size cannot be judged; "
+    "the I/O counters and the breakdown by database are still recorded."
+)
 
 FILE_COUNTERS: tuple[str, ...] = (
     "num_of_reads", "num_of_writes", "num_of_bytes_read", "num_of_bytes_written",
@@ -181,18 +195,26 @@ def capture_mi_snapshot(connection: Any, fetch: Fetch) -> dict[str, Any]:
     except Exception as exc:  # permissions or platform; never fail the test for context
         snapshot["not_collected"]["instance"] = _reason(exc)
     try:
-        snapshot["files"] = [
-            {
+        rows = fetch(connection, SQL_MI_INSTANCE_FILES)
+        hidden = 0
+        files = []
+        for row in rows:
+            visible = row.get("logical_file_name") is not None
+            hidden += 0 if visible else 1
+            files.append({
                 "database_id": int(row["database_id"]),
                 "database_name": None if row.get("database_name") is None else str(row["database_name"]),
                 "file_id": int(row["file_id"]),
-                "logical_file_name": str(row["logical_file_name"]),
-                "file_type": str(row["file_type"]),
-                "size_bytes": None if row.get("size_bytes") is None else int(row["size_bytes"]),
+                # Without sys.master_files the file is named by its ID, and
+                # its type and size are unknown (None), never assumed.
+                "logical_file_name": str(row["logical_file_name"]) if visible else f"file {int(row['file_id'])}",
+                "file_type": str(row["file_type"]) if visible and row.get("file_type") is not None else None,
+                "size_bytes": None if not visible or row.get("size_bytes") is None else int(row["size_bytes"]),
                 **{name: int(row[name]) for name in FILE_COUNTERS},
-            }
-            for row in fetch(connection, SQL_MI_INSTANCE_FILES)
-        ]
+            })
+        snapshot["files"] = files
+        if hidden:
+            snapshot["not_collected"]["file_details"] = FILE_DETAILS_HIDDEN.format(hidden=hidden, total=len(rows))
     except Exception as exc:
         snapshot["not_collected"]["files"] = _reason(exc)
     return snapshot
@@ -438,7 +460,9 @@ def _file_deltas(before: Sequence[dict[str, Any]], after: Sequence[dict[str, Any
             "_size_bytes": a["size_bytes"],
             "_operations": operations,
             "_bytes": moved,
-            "_log_bytes_written": delta["num_of_bytes_written"] if a["file_type"].upper() == "LOG" else 0,
+            # None when the file's type is unknown: its log writes can't be told apart.
+            "_log_bytes_written": (None if a["file_type"] is None
+                                   else delta["num_of_bytes_written"] if a["file_type"].upper() == "LOG" else 0),
             "reads": delta["num_of_reads"],
             "writes": delta["num_of_writes"],
             "iops": _rounded(_per_second(operations, seconds)),
@@ -490,7 +514,7 @@ def assess(
                        "evidence": ["Managed Instance context was not captured in both snapshots."],
                        "warnings": warnings})
         return result
-    for part in ("instance", "files"):
+    for part in ("instance", "files", "file_details"):
         reason = (before.get("not_collected") or {}).get(part) or (after.get("not_collected") or {}).get(part)
         if reason:
             result["not_collected"][part] = reason
@@ -524,7 +548,8 @@ def assess(
     observed = {
         "iops": _rounded(_per_second(sum(f["_operations"] for f in counted), window_seconds)),
         "throughput_mb_per_second": _rounded(_per_second(sum(f["_bytes"] for f in counted) / BYTES_PER_MB, window_seconds), 2),
-        "log_write_mib_per_second": _rounded(
+        # Unknown if any active file's type is unknown, rather than undercounted.
+        "log_write_mib_per_second": None if any(f["_log_bytes_written"] is None for f in files) else _rounded(
             _per_second(sum(f["_log_bytes_written"] for f in files) / BYTES_PER_MIB, window_seconds), 2),
     }
     result["observed"] = observed
@@ -541,7 +566,8 @@ def assess(
                                        {"database_name": f["database_name"], "_operations": 0, "_bytes": 0, "_log": 0})
         entry["_operations"] += f["_operations"]
         entry["_bytes"] += f["_bytes"]
-        entry["_log"] += f["_log_bytes_written"]
+        if entry["_log"] is not None:
+            entry["_log"] = None if f["_log_bytes_written"] is None else entry["_log"] + f["_log_bytes_written"]
     databases = []
     for entry in sorted(by_database.values(), key=lambda e: e["_operations"], reverse=True):
         databases.append({
@@ -550,7 +576,8 @@ def assess(
             "share_of_io_percent": _percent(entry["_operations"], total_operations),
             "iops": _rounded(_per_second(entry["_operations"], window_seconds)),
             "mib_per_second": _rounded(_per_second(entry["_bytes"] / BYTES_PER_MIB, window_seconds), 2),
-            "log_write_mib_per_second": _rounded(_per_second(entry["_log"] / BYTES_PER_MIB, window_seconds), 2),
+            "log_write_mib_per_second": None if entry["_log"] is None else _rounded(
+                _per_second(entry["_log"] / BYTES_PER_MIB, window_seconds), 2),
         })
     result["databases"] = databases
     others = [d for d in databases if not d["is_target"] and (d["share_of_io_percent"] or 0) > OTHER_WORKLOAD_SHARE_PERCENT]
@@ -602,14 +629,14 @@ def assess(
     ]
     for f in file_pressure:
         evidence.append(
-            f"File {f['database_name']}.{f['logical_file_name']} ({f['file_type']}, {f['size_gib']} GiB): "
+            f"File {f['database_name']}.{f['logical_file_name']} ({f['file_type'] or 'type unknown'}, {f['size_gib']} GiB): "
             f"{f['iops']:,} IOPS ({f['iops_percent']}% of {f['iops_limit']:,}), {f['mib_per_second']} MiB/s "
             f"({f['throughput_percent']}% of {f['mib_per_second_limit']}), slowest latency {_slowest(f)} ms."
         )
     slow = [f for f in result["files"] if _slowest(f) > SLOW_IO_MS and f not in file_pressure]
     for f in slow[:5]:
         evidence.append(
-            f"File {f['database_name']}.{f['logical_file_name']} ({f['file_type']}) was slow "
+            f"File {f['database_name']}.{f['logical_file_name']} ({f['file_type'] or 'type unknown'}) was slow "
             f"({_slowest(f)} ms) without being near a known limit."
         )
 
@@ -623,7 +650,10 @@ def assess(
         classification = "NOT_PROVEN"
     elif files:
         # "Healthy" needs the storage limits; without them it cannot be said.
-        limits_known = bool(storage) and (storage != "classic" or limits["iops"] is not None)
+        # Without the storage type or the file details, the limits that would
+        # make it "healthy" were never checked.
+        limits_known = (bool(storage) and (storage != "classic" or limits["iops"] is not None)
+                        and not result["not_collected"].get("file_details"))
         classification = "HEALTHY" if limits_known else "NOT_ASSESSED"
     else:
         classification = "NO_ACTIVITY"

@@ -244,6 +244,22 @@ class SqlSnapshotTests(unittest.TestCase):
         self.assertIn("instance", snapshot["managed_instance"]["not_collected"])
         self.assertEqual(snapshot["wait_stats"]["WRITELOG"]["wait_time_ms"], 1000)
 
+    def test_hidden_file_details_show_in_the_record(self):
+        before_data, after_data = sql_data(), sql_data(data_writes=700, log_writes=1100,
+                                                       log_bytes=3 * GIB, log_stall=4000)
+        for data in (before_data, after_data):
+            data["mi_files"] = [row[:3] + (None, None, None) + row[6:] for row in data["mi_files"]]
+        before = c.capture_sql_snapshot(FakeConnection(before_data), now=at(21, 0))
+        after = c.capture_sql_snapshot(FakeConnection(after_data), now=at(21, 2))
+        self.assertIn("file_details", before["managed_instance"]["not_collected"])
+        deltas = c.compute_sql_deltas(before, after)
+        deltas["managed_instance"] = c._assess_managed_instance(
+            {"snapshot": before, "managed_instance_stated": {"gp_storage": "classic"}}, after, deltas)
+        record = c.build_benchmark_record(TEST_IDENTITY, NOTES, c.summarise_copy_activity(ACTIVITY_RUN), deltas)
+        markdown = c.render_markdown(record)
+        self.assertIn("File details not collected", markdown)
+        self.assertIn("VIEW ANY DEFINITION", markdown)
+
     def test_every_query_is_a_select(self):
         connection = FakeConnection(sql_data())
         c.capture_sql_snapshot(connection, now=at(21, 0))

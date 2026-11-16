@@ -59,7 +59,8 @@ python -m pip install pyodbc azure-identity
 
 | Where | What you need | Why |
 | --- | --- | --- |
-| SQL Server and SQL Managed Instance | Permission to view server state | Wait statistics and file I/O counters are server-level views. On Managed Instance the same permission also covers the instance description and the file list for every database. If it is missing for those two, the record says "not collected" and the rest of the test is unaffected. |
+| SQL Server and SQL Managed Instance | Permission to view server state | Wait statistics and file I/O counters are server-level views. On Managed Instance the same permission also covers the instance description and every database's I/O counters. |
+| SQL Managed Instance, for the capacity check | `VIEW ANY DEFINITION` (or `CREATE DATABASE` or `ALTER ANY DATABASE`) | The names, types, and sizes of every database's files come from `sys.master_files`, which shows a row only with one of these permissions. Without it, the record says "File details not collected": the log write rate and the storage limits that depend on file size aren't judged, and the classification is `NOT_ASSESSED` unless waits prove a limit was reached. The rest of the test is unaffected. |
 | Azure SQL Database | Permission to view database state | The database-scoped wait and I/O views are used |
 | Data factory | Read access to the factory's pipeline runs | To check the run's status and read the Copy activity result. Not needed only when you [stop by hand](#stop-by-hand-without-waiting) with a saved file |
 
@@ -558,7 +559,7 @@ Every query is a `SELECT` against a system view. Nothing is changed.
 | File I/O | `sys.dm_io_virtual_file_stats` joined to `sys.database_files` | Per file: reads, writes, bytes read and written, and read and write stall time |
 | Log space | `sys.dm_db_log_space_usage` | Total log size, used log space, and percentage used |
 | Instance (Managed Instance only) | `sys.server_resource_stats`, newest row | Service tier, hardware, vCores, reserved storage, and storage used |
-| All files (Managed Instance only) | `sys.dm_io_virtual_file_stats(NULL, NULL)` joined to `sys.master_files` | For every file of every database: its size and the same I/O counters as above. One query; no database is switched into. |
+| All files (Managed Instance only) | `sys.dm_io_virtual_file_stats(NULL, NULL)`, with names, types, and sizes from `sys.master_files` where the sign-in can see them | For every file of every database: the same I/O counters as above, and its name, type, and size. One query; no database is switched into. |
 
 The wait view is chosen from the engine edition. Azure SQL Database (engine
 edition 5) does not let database users read the instance-wide view, so the
@@ -884,4 +885,5 @@ first use, check one record by hand:
 | `failed status checks in a row` | Azure couldn't be reached for about five minutes | Check the network or VPN, then run the same command again |
 | Status stays `not started yet` | The pipeline wasn't started, or `--pipeline-name` is wrong | Start the pipeline, or check the name in ADF Studio |
 | `Managed Instance instance was not collected` or `files was not collected` | Your sign-in can't view server state | Ask for the permission; the rest of the record is still valid |
+| `File details not collected` in the Managed Instance section | Your sign-in can't see `sys.master_files` rows | Ask for `VIEW ANY DEFINITION`; see [Permissions](#permissions). The rest of the record is still valid. |
 | Classification `NOT_ASSESSED` on General Purpose | `--mi-gp-storage` wasn't given on `start` | Give it on the next test's `start`; see step 1 |

@@ -226,6 +226,20 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result["classification"], "NOT_ASSESSED")
         self.assertEqual(result["not_collected"]["files"], "denied")
 
+    def test_hidden_file_details_are_not_assessed_but_waits_still_count(self):
+        hidden = [dict(f, file_type=None, size_bytes=None) for f in quiet_load()]
+        before, after = snapshots(hidden)
+        for snap in (before, after):
+            snap["not_collected"]["file_details"] = "not visible"
+        result = m.assess(before, after, WINDOW, waits(), {"gp_storage": "classic"}, "LoadTest")
+        self.assertIsNone(result["observed"]["log_write_mib_per_second"])   # unknown, not 0
+        self.assertIsNone(result["limits"]["iops"])                          # no sizes, no ceiling
+        self.assertEqual(result["classification"], "NOT_ASSESSED")
+        self.assertEqual(result["not_collected"]["file_details"], "not visible")
+        self.assertIsNotNone(result["databases"][0]["iops"])                  # breakdown still there
+        result = m.assess(before, after, WINDOW, waits(governor_ms=500), {"gp_storage": "classic"}, "LoadTest")
+        self.assertEqual(result["classification"], "INSTANCE_LEVEL")
+
     def test_missing_snapshot_is_not_assessed(self):
         result = m.assess(None, None, WINDOW, waits(), {}, "LoadTest")
         self.assertFalse(result["collected"])
@@ -273,6 +287,26 @@ class CaptureTests(unittest.TestCase):
         self.assertIsNone(snapshot["instance"])
         self.assertIn("VIEW SERVER STATE", snapshot["not_collected"]["instance"])
         self.assertEqual(len(snapshot["files"]), 1)
+
+    def test_hidden_file_details_keep_the_counters_and_say_why(self):
+        # Without VIEW ANY DEFINITION, sys.master_files shows no rows, so the
+        # LEFT JOIN returns the counters with no name, type, or size.
+        def fetch(_connection, sql):
+            if "server_resource_stats" in sql:
+                return [{"sku": "General Purpose", "hardware_generation": "Gen5", "virtual_core_count": 8,
+                         "reserved_storage_mb": 1048576, "storage_space_used_mb": 1.0}]
+            return [{"database_id": 5, "database_name": "LoadTest", "file_id": 1, "logical_file_name": None,
+                     "file_type": None, "size_bytes": None, **{k: 1 for k in m.FILE_COUNTERS}}]
+
+        snapshot = m.capture_mi_snapshot(object(), fetch)
+        self.assertEqual(snapshot["files"][0]["logical_file_name"], "file 1")
+        self.assertIsNone(snapshot["files"][0]["file_type"])
+        self.assertIsNone(snapshot["files"][0]["size_bytes"])
+        self.assertIn("VIEW ANY DEFINITION", snapshot["not_collected"]["file_details"])
+        self.assertIn("1 of 1 files", snapshot["not_collected"]["file_details"])
+
+    def test_the_files_query_keeps_counters_when_details_are_hidden(self):
+        self.assertIn("LEFT JOIN sys.master_files", m.SQL_MI_INSTANCE_FILES)
 
     def test_queries_only_read(self):
         for sql in (m.SQL_MI_INSTANCE, m.SQL_MI_INSTANCE_FILES):

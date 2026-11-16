@@ -1201,7 +1201,8 @@ def _render_managed_instance(mi: dict[str, Any]) -> list[str]:
     if mi.get("evidence"):
         lines += ["### Evidence", ""] + [f"- {line}" for line in mi["evidence"]] + [""]
     notes = list(limits.get("notes") or [])
-    notes += [f"{part.capitalize()} not collected: {reason}" for part, reason in (mi.get("not_collected") or {}).items()]
+    labels = {"instance": "Instance description", "files": "File statistics", "file_details": "File details"}
+    notes += [f"{labels.get(part, part)} not collected: {reason}" for part, reason in (mi.get("not_collected") or {}).items()]
     if notes:
         lines += ["### Notes on the limits", ""] + [f"- {note}" for note in notes] + [""]
     if mi.get("databases"):
@@ -1228,7 +1229,7 @@ def _render_managed_instance(mi: dict[str, Any]) -> list[str]:
         for f in mi["files"][:10]:
             limit = (f"{f['iops_limit']:,} / {f['mib_per_second_limit']}" if f.get("iops_limit") else "none")
             lines.append(
-                f"| {f['database_name']}.{f['logical_file_name']} | {f['file_type']} | {_show(f.get('size_gib'))} | "
+                f"| {f['database_name']}.{f['logical_file_name']} | {_show(f['file_type'])} | {_show(f.get('size_gib'))} | "
                 f"{_show(f.get('iops'))} | {_show(f.get('mib_per_second'))} | {limit} | "
                 f"{_show(f.get('read_latency_ms'))} | {_show(f.get('write_latency_ms'))} |"
             )
