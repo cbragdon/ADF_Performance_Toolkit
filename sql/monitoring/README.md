@@ -1,6 +1,7 @@
 # SQL Managed Instance ADF Load Monitoring Scripts
 
-This folder contains eight read-only T-SQL scripts for observing Azure SQL
+This folder contains eight read-only T-SQL scripts (01 to 07, and
+`azure_sql_mi_file_diagnostic_v2-4.sql`) for observing Azure SQL
 Managed Instance (SQL MI) while Azure Data Factory (ADF) loads data into a
 database. The goal is to identify whether an ADF tuning change improves
 throughput or simply moves the bottleneck to SQL MI transaction logging,
@@ -16,7 +17,8 @@ These scripts are intended for the ADF Performance Toolkit learning lab and for 
 scripts 02, 06, and 07 (steps 2, 5, 8, and 9 below, and the script 02 part of
 step 10) and writes the result as a benchmark record. See the
 [Run Collector guide](../../scripts/collect_run_metrics.md). The scripts remain
-the way to inspect the sink by hand, and scripts 01, 03, 04, 05, and 08 are
+the way to inspect the sink by hand, and scripts 01, 03, 04, 05, and
+`azure_sql_mi_file_diagnostic_v2-4.sql` are
 still run manually.
 
 For each ADF benchmark:
@@ -27,7 +29,7 @@ For each ADF benchmark:
 4. Run `04_check_log_file_configuration.sql` before the benchmark series and again if file configuration changes.
 5. Run Step 1 of `07_capture_load_wait_stats.sql` immediately before starting ADF. Keep that SQL session open.
 6. Start the ADF Copy Activity.
-7. During a longer load, periodically run `02_monitor_log_space.sql` and `08_monitor_live_file_iops.sql`; use `05_find_active_log_transactions.sql` if log usage or `ACTIVE_TRANSACTION` becomes important.
+7. During a longer load, periodically run `02_monitor_log_space.sql` and `azure_sql_mi_file_diagnostic_v2-4.sql`; use `05_find_active_log_transactions.sql` if log usage or `ACTIVE_TRANSACTION` becomes important.
 8. Capture `06_monitor_file_io_latency.sql` immediately before and after the run so deltas can be calculated.
 9. After the ADF activity finishes, run Step 2 of `07_capture_load_wait_stats.sql` in the same SQL session.
 10. Capture `02_monitor_log_space.sql` and `03_monitor_log_stats.sql` again.
@@ -327,37 +329,64 @@ Two concurrent writers may be more efficient than four for that target-table con
 
 ---
 
-## 08_monitor_live_file_iops.sql
+## azure_sql_mi_file_diagnostic_v2-4.sql
 
 ### Purpose
 
-Captures a configurable short I/O sample for the current database while an ADF
-load is active. It reports observed reads, writes, IOPS, throughput, latency,
-and data/log file space without inferring service limits from file size.
+A live capacity check for the whole Managed Instance, run by hand while a load
+is active. It takes a five-second sample of every file of every database and
+compares it with the limits Microsoft publishes for the instance's tier. It
+then says whether pressure is on one file (`FILE_LEVEL`), on the whole
+instance (`INSTANCE_LEVEL`), both (`MIXED`), or not proven, and suggests the
+next step to evaluate, with commented-out file expansion statements.
 
-### How to use it
+It applies the same limits and classifications as the run collector's
+Managed Instance check (`scripts\mi_capacity.py`). The script shows a moment
+during the load; the collector covers the whole load.
 
-Run it in the target database while ADF is transferring data. The default
-sample window is five seconds; change `@SampleSeconds` only when a longer
-window better represents the workload. Repeat the sample during a long load
-because a single interval can miss short bursts.
+### Before you run it
 
-The optional ceiling variables are `NULL` by default. Populate them only with
-current documented limits for the exact SQL MI configuration under test. The
-script calculates percentages only when those values are supplied.
+Set the two values in the `SETTINGS` block at the top:
+
+| Setting | What to put in it | Where to find it |
+| --- | --- | --- |
+| `@GeneralPurposeStorage` | `N'classic'` or `N'next-gen'` for a General Purpose instance. Leave `NULL` for Business Critical. Left `NULL` on General Purpose, storage limits aren't judged and the result is `NOT_ASSESSED`. | Azure portal, the managed instance, **Compute + storage**. If **Next-gen General Purpose** shows as enabled, use `N'next-gen'`. |
+| `@NextGenProvisionedIOPS` | Next-gen only, and only if extra IOPS were bought: the instance's total IOPS. Otherwise leave `NULL`, and the script assumes the included 3 IOPS per reserved GB. | Azure portal, the managed instance, **Compute + storage**, the IOPS setting. |
+
+Run it in the database being loaded; result set 3 marks it as the target. It
+needs permission to view server state, and access to each database it reads
+file sizes from. A database it can't read is listed on the **Messages** tab,
+and on classic General Purpose the instance ceiling is then left unknown.
+
+Files with unreadable metadata still appear under their file IDs, and their
+I/O stays in the database breakdown. If an active file's type is unknown,
+the affected log-write rates are `NULL`, not partial totals. **Limits_Note**
+explains the missing details, and incomplete metadata cannot produce a
+healthy verdict.
 
 ### Key output
 
-- Per-file read/write operations, MiB/s, and average latency for the sample.
-- Per-file allocated, used, and free space for data files.
-- Database-level observed IOPS, read throughput, write throughput, and log
-  write throughput.
-- Optional percentages of the user-supplied documented IOPS and log-write
-  ceilings.
+- **Result set 1**, one row per file: size, each file's own limit (classic
+  General Purpose), live IOPS, MiB/s and latency, the classification, and,
+  for a file near its limit and slow, the next size step from Microsoft's
+  table with a commented-out `ALTER DATABASE` to review.
+- **Result set 2**, the instance: tier, storage type, hardware, vCores, the
+  IOPS, throughput and log write ceilings with how each was worked out
+  (`Instance_Ceiling_Basis`), live totals against them, the classification,
+  and `Limits_Note` for anything that couldn't be worked out.
+- **Result set 3**, by database: each database's share of the instance's I/O
+  during the sample.
 
-The script creates temporary tables and waits for the configured sample
-duration. It does not persist data, alter database files, or generate resize
-commands.
+### Version 2.4
+
+Version 2.4 brings the limits in line with Microsoft's resource limits page.
+Version 2.3 used older per-file values, a vCore table for the classic General
+Purpose instance ceiling that isn't in Microsoft's documentation, and guessed
+Next-gen from reserved storage over 16 TB. The script's header lists every
+change, and `tests\test_mi_file_diagnostic_script.py` checks its limits
+against the collector's. Version 2.3 is kept on disk in `archive\` at the
+repository root, for comparison only. `archive\` is listed in `.gitignore`, so
+it is never pushed to GitHub.
 
 ---
 
@@ -390,7 +419,7 @@ ADF Copy Activity is slow
 07 - Where did SQL MI spend its waiting time during the load?
         |
         v
-08 - What live file IOPS, throughput, and latency are observed during the active copy?
+v2-4 - What live file IOPS, throughput, and latency are observed, and how close are they to the instance's limits?
 ```
 
 Combine those observations with these ADF Copy Activity metrics:

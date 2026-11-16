@@ -658,7 +658,7 @@ This happens when `--mi-gp-storage` wasn't given for a General Purpose
 instance, or when the hardware isn't recognised and the limit depends on it.
 
 **The classification.** It uses the same names and thresholds as
-`sql\monitoring\azure_sql_mi_file_diagnostic_v2-3.sql`: a value at 70% or more
+`sql\monitoring\azure_sql_mi_file_diagnostic_v2-4.sql`: a value at 70% or more
 of its limit is "near the limit", and I/O slower than 15 ms is "slow".
 
 | Classification | What it means |
@@ -798,19 +798,20 @@ before comparing runs.
 The collector automates the before-and-after captures of scripts 02, 06, and
 07. Those scripts remain useful for looking at one moment by hand.
 
-Scripts 01, 03, 04, 05, and 08 look at conditions *during* a load or at file
+Scripts 01, 03, 04, 05, and `azure_sql_mi_file_diagnostic_v2-4.sql` look at conditions *during* a load or at file
 configuration. The collector does not replace them. Use them while a long load
 is running, as the monitoring guide describes.
 
-`azure_sql_mi_file_diagnostic_v2-3.sql` and the collector's Managed Instance
-check ask the same question in different ways. The script takes a live
-five-second sample, so use it while a load is running. The collector covers the
-whole load, from `start` to `stop`. The collector also differs in three ways:
-it uses the current published limits (some of the script's file limits are
-older values), it doesn't infer Next-gen General Purpose from the storage size
-but asks you with `--mi-gp-storage`, and it records evidence without
-suggesting changes. If the two disagree, the collector's averages may be
-hiding a burst that the script's sample caught.
+`azure_sql_mi_file_diagnostic_v2-4.sql` and the collector's Managed Instance
+check ask the same question with the same limits and classifications. The
+script takes a live five-second sample, so use it while a load is running. The
+collector covers the whole load, from `start` to `stop`. Both are told the
+General Purpose storage type rather than guessing it: the script in its
+`SETTINGS` block, the collector with `--mi-gp-storage`. The script also
+suggests the next step to evaluate, such as the next file size; the collector
+records evidence only. If the two disagree, the collector's averages may be
+hiding a burst that the script's sample caught. (Version 2.3 of the script
+used older limits; don't compare with it.)
 
 ## Limits
 
@@ -861,10 +862,10 @@ first use, check one record by hand:
    guide describes.
 2. Compare their deltas with the `sink` section of `benchmark_record.json`.
 3. Compare the ADF values with the Copy activity's monitoring view.
-4. On a Managed Instance, run `azure_sql_mi_file_diagnostic_v2-3.sql` during
-   the load, and check that the tier, vCores, storage, and busiest files match
-   the record's **Managed Instance capacity** section. Expect the script's
-   file limits to differ where it uses older values.
+4. On a Managed Instance, run `azure_sql_mi_file_diagnostic_v2-4.sql` during
+   the load, with the same storage type set, and check that the tier, vCores,
+   storage, limits, and busiest files match the record's **Managed Instance
+   capacity** section.
 
 ## Troubleshooting
 

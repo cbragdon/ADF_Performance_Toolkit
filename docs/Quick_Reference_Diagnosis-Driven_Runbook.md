@@ -23,7 +23,7 @@ Use one rule throughout: **change one variable, run three comparable executions,
 - **CONFIRM:** improvement is **5-10%**. Repeat the comparison before accepting the setting.
 - **INVALID SERIES:** the repeated baseline at the end differs by **more than 15%** from the starting baseline. The environment changed enough that the tuning comparison is unreliable.
 
-Use `ADF_Performance_Toolkit` monitoring scripts 01-08 when needed. Do not run every diagnostic continuously. Use the focused SQL MI scripts when the ADF results indicate the sink may be limiting performance.
+Use `ADF_Performance_Toolkit` monitoring scripts (01 to 07 and `azure_sql_mi_file_diagnostic_v2-4.sql`) when needed. Do not run every diagnostic continuously. Use the focused SQL MI scripts when the ADF results indicate the sink may be limiting performance.
 
 ## 2. DIU tuning
 

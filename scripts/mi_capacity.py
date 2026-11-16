@@ -8,7 +8,7 @@ to know how close that load came to the limits Azure places on the instance,
 and whether something other than the load was using the instance at the same
 time. This module adds that context to the benchmark record.
 
-It follows the same idea as sql/monitoring/azure_sql_mi_file_diagnostic_v2-3.sql
+It follows the same idea as sql/monitoring/azure_sql_mi_file_diagnostic_v2-4.sql
 but is built for one recorded test, not for live troubleshooting:
 
 * It reads nothing while the load runs. Every value comes from the 'before'
@@ -90,7 +90,7 @@ LOG_RATE_LIMITS: dict[str, tuple[float, dict[str, float]]] = {
 }
 
 # Thresholds used to call a value "near a limit" and an I/O "slow". They are
-# the same as in azure_sql_mi_file_diagnostic_v2-3.sql so that the two tools
+# the same as in azure_sql_mi_file_diagnostic_v2-4.sql so that the two tools
 # agree.
 NEAR_LIMIT_PERCENT = 70.0
 SLOW_IO_MS = 15.0

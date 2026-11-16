@@ -63,7 +63,7 @@ Record:
 | SQL MI | Data-file IOPS/latency | Shows whether data storage is becoming the constraint |
 | Cost | Cost/load and cost/GiB when available | Prevents paying materially more for negligible speed |
 
-Use the SQL monitoring scripts in `sql/monitoring/` as supporting evidence. Script 07 measures wait deltas for the load window, and script 08 captures live file IOPS, throughput, and latency.
+Use the SQL monitoring scripts in `sql/monitoring/` as supporting evidence. Script 07 measures wait deltas for the load window, and `azure_sql_mi_file_diagnostic_v2-4.sql` captures live file IOPS, throughput, and latency, and compares them with the instance's published limits.
 
 ### Baseline routing table
 
@@ -254,7 +254,7 @@ A staging design passes only when the total workflow provides a useful operation
 
 ## 9. SQL MI data-file I/O and instance capacity
 
-Use scripts 06 and 08 plus wait information to distinguish transaction-log pressure from data-file/storage pressure.
+Use script 06 and `azure_sql_mi_file_diagnostic_v2-4.sql` plus wait information to distinguish transaction-log pressure from data-file/storage pressure.
 
 ### Evidence of data-file/storage pressure
 

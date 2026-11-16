@@ -40,14 +40,19 @@ once.
 
 `test_collect_run_metrics.py` verifies `scripts\collect_run_metrics.py`, and
 `test_mi_capacity.py` verifies its Managed Instance check in
-`scripts\mi_capacity.py`. The tests need no database, no Azure access, and no third-party packages. SQL is
+`scripts\mi_capacity.py`, and `test_mi_file_diagnostic_script.py` checks that
+`sql\monitoring\azure_sql_mi_file_diagnostic_v2-4.sql` uses the same limits,
+contains none of version 2.3's outdated values, and stays read-only. Its
+missing-metadata query fragments also run against SQLite in memory to check
+that hidden files retain their I/O and incomplete log rates stay unknown.
+The tests need no SQL Server connection, no Azure access, and no third-party packages. SQL is
 replaced by a fake connection that returns prepared rows, and the Azure REST
 call is replaced by a fake that returns prepared pages.
 
 ## Run the tests
 
 ```powershell
-python -m unittest tests/test_collect_run_metrics.py tests/test_mi_capacity.py -v
+python -m unittest tests/test_collect_run_metrics.py tests/test_mi_capacity.py tests/test_mi_file_diagnostic_script.py -v
 ```
 
 ## What the tests verify

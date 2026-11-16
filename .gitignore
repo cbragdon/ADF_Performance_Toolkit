@@ -19,3 +19,9 @@ scripts/collect_run_metrics_handoff.md
 # Local environment / secrets
 .env
 .env.*
+
+# Retired scripts kept on disk for comparison; never pushed
+archive/
+
+# Handoff notes for AI assistants; kept local
+sql/monitoring/azure_sql_mi_file_diagnostic_handoff.md
